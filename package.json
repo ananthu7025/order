@@ -10,7 +10,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx lib/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
-    "db:seed": "tsx lib/db/seed.ts"
+    "db:seed": "tsx lib/db/seed.ts",
+    "telegram:bot": "tsx scripts/telegram-bot.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
@@ -18,6 +19,7 @@
     "drizzle-orm": "^0.45.2",
     "lucide-react": "^1.37.0",
     "next": "16.3.3",
+    "pdf-lib": "^1.17.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "zod": "^4.5.4"

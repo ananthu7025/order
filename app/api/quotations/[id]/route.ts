@@ -5,6 +5,7 @@ import { quotations, quotationLineItems, leads } from "@/lib/db/schema";
 import { getCurrentManufacturer } from "@/lib/manufacturer";
 import { handleApiError, jsonError } from "@/lib/api-helpers";
 import { and, asc, eq } from "drizzle-orm";
+import { sendQuotationPdfToBuyer } from "@/lib/pdf/send-quotation";
 
 const updateQuotationSchema = z.object({
   status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REVISION_REQUESTED", "DECLINED"]).optional(),
@@ -75,7 +76,21 @@ export async function PATCH(req: NextRequest, { params }: Params) {
         .where(eq(leads.id, existing.leadId));
     }
 
-    return NextResponse.json({ quotation });
+    // Deliver the quotation PDF the moment it's sent — deterministic,
+    // template-based (see lib/pdf), no LLM involved. Best-effort: a
+    // delivery failure shouldn't roll back the status change the
+    // manufacturer just made.
+    let pdfDelivery: { sent: boolean; reason?: string } | undefined;
+    if (data.status === "SENT") {
+      try {
+        pdfDelivery = await sendQuotationPdfToBuyer(quotation.id);
+      } catch (err) {
+        console.error("Failed to send quotation PDF to buyer", err);
+        pdfDelivery = { sent: false, reason: "Delivery failed" };
+      }
+    }
+
+    return NextResponse.json({ quotation, pdfDelivery });
   } catch (err) {
     return handleApiError(err);
   }

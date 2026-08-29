@@ -37,6 +37,7 @@ export default function QuotationDetailPage() {
   } | null>(null);
   const [updating, setUpdating] = useState(false);
   const [generatingInvoice, setGeneratingInvoice] = useState(false);
+  const [pdfDelivery, setPdfDelivery] = useState<{ sent: boolean; reason?: string } | null>(null);
 
   function refresh() {
     fetch(`/api/quotations/${id}`)
@@ -55,11 +56,15 @@ export default function QuotationDetailPage() {
 
   async function setStatus(status: string) {
     setUpdating(true);
-    await fetch(`/api/quotations/${id}`, {
+    const res = await fetch(`/api/quotations/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
     });
+    if (status === "SENT" && res.ok) {
+      const data = await res.json();
+      setPdfDelivery(data.pdfDelivery ?? null);
+    }
     refresh();
     setUpdating(false);
   }
@@ -101,6 +106,14 @@ export default function QuotationDetailPage() {
         <span className="sep">&gt;</span>
         <span className="current">{quotation.quoteNumber}</span>
       </div>
+
+      {pdfDelivery && (
+        <div className={`banner ${pdfDelivery.sent ? "banner-green" : "banner-amber"}`} style={{ marginBottom: 16 }}>
+          {pdfDelivery.sent
+            ? "✅ Quotation PDF delivered to the buyer on Telegram."
+            : `⚠️ Quotation marked as sent, but the PDF wasn't delivered automatically (${pdfDelivery.reason ?? "unknown reason"}).`}
+        </div>
+      )}
 
       <div className="page-header">
         <div>

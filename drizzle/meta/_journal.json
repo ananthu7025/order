@@ -8,6 +8,20 @@
       "when": 1788031515153,
       "tag": "0000_spooky_the_hunter",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788032589757,
+      "tag": "0001_windy_kronos",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788034199934,
+      "tag": "0002_flippant_surge",
+      "breakpoints": true
     }
   ]
 }

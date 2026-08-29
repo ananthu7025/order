@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { leads } from "@/lib/db/schema";
 import { getCurrentManufacturer } from "@/lib/manufacturer";
 import { handleApiError } from "@/lib/api-helpers";
+import { autoQuoteFromLead } from "@/lib/pdf/auto-quote";
 
 /**
  * Single entry point for every new lead, regardless of where it comes from.
@@ -20,9 +21,10 @@ import { handleApiError } from "@/lib/api-helpers";
  *   extract step is required for that source.
  */
 const inboundLeadSchema = z.object({
-  source: z.enum(["WHATSAPP", "WEBSITE", "MANUAL"]),
+  source: z.enum(["WHATSAPP", "TELEGRAM", "WEBSITE", "MANUAL"]),
   fromPhone: z.string().optional(),
   rawMessage: z.string().optional(),
+  telegramChatId: z.string().optional(),
 
   // Optional structured fields — filled in immediately for manual entry,
   // left absent for a raw bot message awaiting extraction.
@@ -51,6 +53,7 @@ export async function POST(req: NextRequest) {
         status: "NEW",
         fromPhone: data.fromPhone,
         rawMessage: data.rawMessage,
+        telegramChatId: data.telegramChatId,
         buyerName: data.buyerName,
         businessName: data.businessName,
         productText: data.productText,
@@ -63,7 +66,21 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
-    return NextResponse.json({ lead }, { status: 201 });
+    // Fully automatic quotation: the moment a Telegram lead has a matched
+    // product and a parseable quantity, generate a quotation off the
+    // product's own listed price and terms, and deliver the PDF — no
+    // manufacturer click, no LLM. Best-effort: a failure here (e.g. the
+    // product has no price set) must not fail lead creation itself.
+    let autoQuote: Awaited<ReturnType<typeof autoQuoteFromLead>> | undefined;
+    if (data.source === "TELEGRAM" && lead.matchedProductId) {
+      try {
+        autoQuote = await autoQuoteFromLead(lead.id);
+      } catch (err) {
+        console.error("autoQuoteFromLead failed", err);
+      }
+    }
+
+    return NextResponse.json({ lead, autoQuote }, { status: 201 });
   } catch (err) {
     return handleApiError(err);
   }

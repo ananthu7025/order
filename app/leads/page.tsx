@@ -9,7 +9,7 @@ import { Building2 } from "lucide-react";
 
 type Lead = {
   id: string;
-  source: "WHATSAPP" | "WEBSITE" | "MANUAL";
+  source: "WHATSAPP" | "TELEGRAM" | "WEBSITE" | "MANUAL";
   status: "NEW" | "CONTACTED" | "INTERESTED" | "QUOTED" | "WON" | "LOST";
   businessName: string | null;
   buyerName: string | null;

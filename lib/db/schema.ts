@@ -87,6 +87,7 @@ export const products = pgTable("products", {
 
 export const leadSourceEnum = pgEnum("lead_source", [
   "WHATSAPP",
+  "TELEGRAM",
   "WEBSITE",
   "MANUAL",
 ]);
@@ -115,6 +116,10 @@ export const leads = pgTable("leads", {
   // Raw inbound data (always present)
   fromPhone: text("from_phone"),
   rawMessage: text("raw_message"),
+  // Telegram chat id (distinct from fromPhone) — needed to send messages
+  // and documents back to the buyer after the guided-flow session row is
+  // deleted. Only set when source = TELEGRAM.
+  telegramChatId: text("telegram_chat_id"),
 
   // Structured fields (nullable until the extraction step runs)
   buyerName: text("buyer_name"),
@@ -306,3 +311,45 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
     references: [invoices.id],
   }),
 }));
+
+// ---------------------------------------------------------------------------
+// Telegram bot conversation state — no LLM in this MVP, so the buyer answers
+// a fixed sequence of button/text prompts covering everything a manufacturer
+// needs to quote without a follow-up call: product, quantity, specification/
+// customization, delivery location, deadline, business name, and phone
+// (collected via Telegram's native "Share Contact" button, not typed).
+// This table tracks where each chat is in that sequence so a stateless
+// polling loop can resume correctly, and survives a bot restart (unlike an
+// in-memory Map).
+// ---------------------------------------------------------------------------
+export const telegramSessionStepEnum = pgEnum("telegram_session_step", [
+  "AWAITING_PRODUCT",
+  "AWAITING_QUANTITY",
+  "AWAITING_SPECIFICATION",
+  "AWAITING_LOCATION",
+  "AWAITING_DEADLINE",
+  "AWAITING_BUSINESS_NAME",
+  "AWAITING_PHONE",
+  "DONE",
+]);
+
+export const telegramSessions = pgTable("telegram_sessions", {
+  id: text("id").primaryKey().$defaultFn(() => createId()),
+  chatId: text("chat_id").notNull().unique(),
+
+  step: telegramSessionStepEnum("step").notNull().default("AWAITING_PRODUCT"),
+
+  productId: text("product_id").references(() => products.id),
+  quantity: text("quantity"),
+  specification: text("specification"),
+  location: text("location"),
+  deadline: text("deadline"),
+  businessName: text("business_name"),
+  phone: text("phone"),
+
+  telegramUsername: text("telegram_username"),
+  telegramFirstName: text("telegram_first_name"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
