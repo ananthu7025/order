@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
-import { leads } from "@/lib/db/schema";
-import { getCurrentManufacturer } from "@/lib/manufacturer";
 import { handleApiError } from "@/lib/api-helpers";
-import { autoQuoteFromLead } from "@/lib/pdf/auto-quote";
+import { createInboundLead } from "@/lib/leads/create-inbound-lead";
 
 /**
- * Single entry point for every new lead, regardless of where it comes from.
+ * HTTP entry point for a new lead, regardless of where it comes from.
  *
- * - A future WhatsApp bot calls this the instant a message arrives, with
+ * - A future WhatsApp webhook calls this the instant a message arrives, with
  *   just { source: "WHATSAPP", fromPhone, rawMessage }. The lead is created
  *   immediately with status=NEW and every structured field left null —
  *   nothing is lost even before the LLM extraction step runs.
@@ -19,6 +16,9 @@ import { autoQuoteFromLead } from "@/lib/pdf/auto-quote";
  *   same endpoint with source: "MANUAL" and the structured fields already
  *   filled in directly, since a human is typing them in — no separate
  *   extract step is required for that source.
+ * - The Telegram bot (lib/telegram/conversation.ts) does NOT call this over
+ *   HTTP — it calls createInboundLead() directly, since it already runs
+ *   inside this same deployment. This route exists for external callers.
  */
 const inboundLeadSchema = z.object({
   source: z.enum(["WHATSAPP", "TELEGRAM", "WEBSITE", "MANUAL"]),
@@ -41,45 +41,9 @@ const inboundLeadSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const manufacturer = await getCurrentManufacturer();
     const body = await req.json();
     const data = inboundLeadSchema.parse(body);
-
-    const [lead] = await db
-      .insert(leads)
-      .values({
-        manufacturerId: manufacturer.id,
-        source: data.source,
-        status: "NEW",
-        fromPhone: data.fromPhone,
-        rawMessage: data.rawMessage,
-        telegramChatId: data.telegramChatId,
-        buyerName: data.buyerName,
-        businessName: data.businessName,
-        productText: data.productText,
-        matchedProductId: data.matchedProductId,
-        quantity: data.quantity,
-        specification: data.specification,
-        location: data.location,
-        deadline: data.deadline,
-        notes: data.notes,
-      })
-      .returning();
-
-    // Fully automatic quotation: the moment a Telegram lead has a matched
-    // product and a parseable quantity, generate a quotation off the
-    // product's own listed price and terms, and deliver the PDF — no
-    // manufacturer click, no LLM. Best-effort: a failure here (e.g. the
-    // product has no price set) must not fail lead creation itself.
-    let autoQuote: Awaited<ReturnType<typeof autoQuoteFromLead>> | undefined;
-    if (data.source === "TELEGRAM" && lead.matchedProductId) {
-      try {
-        autoQuote = await autoQuoteFromLead(lead.id);
-      } catch (err) {
-        console.error("autoQuoteFromLead failed", err);
-      }
-    }
-
+    const { lead, autoQuote } = await createInboundLead(data);
     return NextResponse.json({ lead, autoQuote }, { status: 201 });
   } catch (err) {
     return handleApiError(err);

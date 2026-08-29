@@ -10,6 +10,7 @@ import {
   type TelegramUpdate,
 } from "./client";
 import { getCurrentManufacturer } from "@/lib/manufacturer";
+import { createInboundLead } from "@/lib/leads/create-inbound-lead";
 
 /**
  * Guided, button-driven requirement flow — no LLM. Each step asks exactly
@@ -101,49 +102,33 @@ async function askForPhone(chatId: string) {
 /**
  * Called once all fields are collected (step DONE). Deliberately safe to
  * call more than once for the same session: the session row is only
- * deleted after the lead is confirmed created, so if the fetch to
- * /api/leads/inbound fails (network blip, dev server restart, etc.) the
- * session survives in DONE and the next message from the buyer just
- * retries this function instead of losing their answers.
+ * deleted after the lead is confirmed created, so if createInboundLead
+ * throws (a transient DB error, etc.) the session survives in DONE and the
+ * next message from the buyer just retries this function instead of
+ * losing their answers.
  */
 async function finalizeLead(session: typeof telegramSessions.$inferSelect) {
-  const appUrl = process.env.APP_URL ?? "http://localhost:3000";
-
   const [product] = session.productId
     ? await db.select({ name: products.name }).from(products).where(eq(products.id, session.productId))
     : [];
 
-  let res: Response;
+  let result: Awaited<ReturnType<typeof createInboundLead>>;
   try {
-    res = await fetch(`${appUrl}/api/leads/inbound`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source: "TELEGRAM",
-        fromPhone: session.phone,
-        telegramChatId: session.chatId,
-        businessName: session.businessName,
-        buyerName: session.telegramFirstName,
-        productText: product?.name,
-        matchedProductId: session.productId ?? undefined,
-        quantity: session.quantity,
-        specification: session.specification,
-        location: session.location,
-        deadline: session.deadline ?? undefined,
-      }),
+    result = await createInboundLead({
+      source: "TELEGRAM",
+      fromPhone: session.phone ?? undefined,
+      telegramChatId: session.chatId,
+      businessName: session.businessName ?? undefined,
+      buyerName: session.telegramFirstName ?? undefined,
+      productText: product?.name,
+      matchedProductId: session.productId ?? undefined,
+      quantity: session.quantity ?? undefined,
+      specification: session.specification ?? undefined,
+      location: session.location ?? undefined,
+      deadline: session.deadline ?? undefined,
     });
   } catch (err) {
-    console.error("finalizeLead: network error calling /api/leads/inbound", err);
-    await sendMessage(
-      session.chatId,
-      "Couldn't reach the server just now. Your answers are saved — send anything to try again.",
-      { reply_markup: removeKeyboard() }
-    );
-    return;
-  }
-
-  if (!res.ok) {
-    console.error("finalizeLead: /api/leads/inbound returned", res.status, await res.text());
+    console.error("finalizeLead: createInboundLead failed", err);
     await sendMessage(
       session.chatId,
       "Something went wrong saving your request. Your answers are saved — send anything to try again.",
@@ -152,11 +137,9 @@ async function finalizeLead(session: typeof telegramSessions.$inferSelect) {
     return;
   }
 
-  const body = await res.json();
-
   await sendMessage(
     session.chatId,
-    body.autoQuote?.generated
+    result.autoQuote?.generated
       ? `✅ Thank you! Your requirement for <b>${product?.name ?? "the product"}</b> has been received — your quotation is being prepared now.`
       : `✅ Thank you! Your requirement for <b>${product?.name ?? "the product"}</b> has been sent to the manufacturer. Your quotation will be delivered shortly.\n\nSend /start to submit another requirement.`,
     { reply_markup: removeKeyboard() }

@@ -1,7 +1,29 @@
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
+/**
+ * Long-polling bot for LOCAL DEV ONLY. Telegram delivers updates either via
+ * webhook or via getUpdates, never both — if a webhook is registered (e.g.
+ * pointed at a Vercel deployment via scripts/set-telegram-webhook.ts),
+ * getUpdates always returns empty and this script silently does nothing.
+ * Run `npm run telegram:webhook:clear` first if you switched from webhook
+ * mode back to local polling.
+ */
 async function main() {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    throw new Error("TELEGRAM_BOT_TOKEN is not set. Add it to .env.local.");
+  }
+
+  const webhookInfo = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`).then((r) => r.json());
+  if (webhookInfo.result?.url) {
+    console.error(
+      `A webhook is currently registered at ${webhookInfo.result.url} — long polling will receive nothing until it's cleared.\n` +
+        `Run: npm run telegram:webhook:clear`
+    );
+    process.exit(1);
+  }
+
   const { getUpdates } = await import("../lib/telegram/client");
   const { handleUpdate } = await import("../lib/telegram/conversation");
 

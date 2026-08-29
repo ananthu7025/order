@@ -11,7 +11,9 @@
     "db:migrate": "tsx lib/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx lib/db/seed.ts",
-    "telegram:bot": "tsx scripts/telegram-bot.ts"
+    "telegram:bot": "tsx scripts/telegram-bot.ts",
+    "telegram:webhook:set": "tsx scripts/set-telegram-webhook.ts",
+    "telegram:webhook:clear": "tsx scripts/set-telegram-webhook.ts --clear"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
