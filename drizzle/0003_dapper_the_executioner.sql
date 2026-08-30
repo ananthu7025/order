@@ -1,0 +1,1 @@
+ALTER TYPE "public"."telegram_session_step" ADD VALUE 'AWAITING_DETAILS';

@@ -331,6 +331,10 @@ export const telegramSessionStepEnum = pgEnum("telegram_session_step", [
   "AWAITING_BUSINESS_NAME",
   "AWAITING_PHONE",
   "DONE",
+  // Single free-text collection step (LLM-assisted) that replaced the
+  // AWAITING_QUANTITY..AWAITING_BUSINESS_NAME sequence above. Those values
+  // are kept so any session already mid-flow at deploy time still resolves.
+  "AWAITING_DETAILS",
 ]);
 
 export const telegramSessions = pgTable("telegram_sessions", {
