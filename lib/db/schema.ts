@@ -6,6 +6,7 @@ import {
   integer,
   numeric,
   pgEnum,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createId } from "@paralleldrive/cuid2";
@@ -332,9 +333,15 @@ export const telegramSessionStepEnum = pgEnum("telegram_session_step", [
   "AWAITING_PHONE",
   "DONE",
   // Single free-text collection step (LLM-assisted) that replaced the
-  // AWAITING_QUANTITY..AWAITING_BUSINESS_NAME sequence above. Those values
-  // are kept so any session already mid-flow at deploy time still resolves.
+  // AWAITING_QUANTITY..AWAITING_BUSINESS_NAME sequence above. Superseded by
+  // AWAITING_AGENT below; kept (like the ones above it) so any session
+  // already mid-flow at deploy time still resolves instead of erroring.
   "AWAITING_DETAILS",
+  // Fully conversational step: every buyer message here goes to the Groq
+  // agent (lib/telegram/agent.ts), which asks free-form follow-up questions
+  // and calls a tool to record fields as they come up. Session moves to
+  // AWAITING_PHONE once the agent signals it has everything it needs.
+  "AWAITING_AGENT",
 ]);
 
 export const telegramSessions = pgTable("telegram_sessions", {
@@ -350,6 +357,13 @@ export const telegramSessions = pgTable("telegram_sessions", {
   deadline: text("deadline"),
   businessName: text("business_name"),
   phone: text("phone"),
+
+  // Running chat transcript for the Groq agent (AWAITING_AGENT step) — an
+  // array of {role, content} turns. Persisted here rather than kept
+  // in-memory because the webhook route is a stateless serverless
+  // function; without this the agent would lose all context between
+  // messages. Unused by the older button-driven steps.
+  history: jsonb("history").$type<{ role: "user" | "assistant"; content: string }[]>(),
 
   telegramUsername: text("telegram_username"),
   telegramFirstName: text("telegram_first_name"),

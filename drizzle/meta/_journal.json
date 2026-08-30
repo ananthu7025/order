@@ -29,6 +29,13 @@
       "when": 1788079258598,
       "tag": "0003_dapper_the_executioner",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788080029127,
+      "tag": "0004_chilly_tyger_tiger",
+      "breakpoints": true
     }
   ]
 }
