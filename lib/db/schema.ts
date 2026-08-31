@@ -365,6 +365,12 @@ export const telegramSessionStepEnum = pgEnum("telegram_session_step", [
   // and calls a tool to record fields as they come up. Session moves to
   // AWAITING_PHONE once the agent signals it has everything it needs.
   "AWAITING_AGENT",
+  // Cross-manufacturer product search (lib/search/*) — every buyer message
+  // here is turned into a structured query and searched across every
+  // manufacturer's catalog; once the buyer picks a manufacturer/product
+  // from the results, the session moves to AWAITING_AGENT (now scoped to
+  // that one manufacturer) to collect the rest of the requirement.
+  "AWAITING_SEARCH",
 ]);
 
 export const telegramSessions = pgTable("telegram_sessions", {
@@ -372,6 +378,11 @@ export const telegramSessions = pgTable("telegram_sessions", {
   chatId: text("chat_id").notNull().unique(),
 
   step: telegramSessionStepEnum("step").notNull().default("AWAITING_PRODUCT"),
+
+  // Set once the buyer picks a manufacturer from search results — from
+  // that point on, the agent (lib/telegram/agent.ts) is scoped to this
+  // manufacturer's catalog instead of searching across all of them.
+  manufacturerId: text("manufacturer_id").references(() => manufacturers.id),
 
   productId: text("product_id").references(() => products.id),
   quantity: text("quantity"),

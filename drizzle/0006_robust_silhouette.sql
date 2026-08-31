@@ -1,0 +1,3 @@
+ALTER TYPE "public"."telegram_session_step" ADD VALUE 'AWAITING_SEARCH';--> statement-breakpoint
+ALTER TABLE "telegram_sessions" ADD COLUMN "manufacturer_id" text;--> statement-breakpoint
+ALTER TABLE "telegram_sessions" ADD CONSTRAINT "telegram_sessions_manufacturer_id_manufacturers_id_fk" FOREIGN KEY ("manufacturer_id") REFERENCES "public"."manufacturers"("id") ON DELETE no action ON UPDATE no action;

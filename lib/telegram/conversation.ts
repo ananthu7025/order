@@ -4,28 +4,37 @@ import { eq } from "drizzle-orm";
 import {
   sendMessage,
   answerCallbackQuery,
+  inlineKeyboard,
   replyKeyboard,
   removeKeyboard,
   type TelegramUpdate,
 } from "./client";
 import { createInboundLead } from "@/lib/leads/create-inbound-lead";
 import { runLeadAgent, type ChatTurn } from "./agent";
+import { parseSearchIntent } from "@/lib/search/intent";
+import { searchProducts } from "@/lib/search/products";
 
 /**
- * Fully conversational requirement flow. From /start onward the buyer just
- * chats naturally — "hi, looking for packaging for my cafe" — and
- * lib/telegram/agent.ts (a Groq tool-calling agent) asks whatever follow-up
- * questions are needed, matching their answers against the live product
- * catalog and filling in quantity/specification/location/deadline/business
- * name as they come up in conversation, in any order. No buttons until the
- * very end, where Telegram's native "share contact" button is kept for the
- * phone number (a verified number beats a typed one, and it's the one step
- * that doesn't benefit from being conversational). Once the agent signals
- * it has everything, the session moves to AWAITING_PHONE and finalizes into
- * a lead exactly as before.
+ * Fully conversational requirement flow, marketplace-wide from /start:
+ *
+ * 1. AWAITING_SEARCH — the buyer describes what they need in free text;
+ *    each message is turned into a structured query (lib/search/intent.ts)
+ *    and searched across every verified manufacturer's published catalog
+ *    (lib/search/products.ts). Matches are shown as buttons (manufacturer +
+ *    product); no matches yet just prompts for more detail and stays here.
+ * 2. Picking a result sets manufacturerId + productId on the session and
+ *    moves to AWAITING_AGENT, now scoped to that one manufacturer.
+ * 3. AWAITING_AGENT — lib/telegram/agent.ts (a Groq tool-calling agent)
+ *    asks whatever follow-up questions are needed to fill in
+ *    quantity/specification/location/deadline/business name, in any order.
+ * 4. AWAITING_PHONE — Telegram's native "share contact" button (a verified
+ *    number beats a typed one, and it's the one step that doesn't benefit
+ *    from being conversational).
+ * 5. DONE — finalizes into a lead scoped to the picked manufacturer.
  */
 
 const HISTORY_TURN_LIMIT = 20;
+const RESULT_CALLBACK_PREFIX = "pick_result:";
 
 async function getOrCreateSession(chatId: string, from?: { username?: string; first_name?: string }) {
   const [existing] = await db.select().from(telegramSessions).where(eq(telegramSessions.chatId, chatId));
@@ -35,7 +44,7 @@ async function getOrCreateSession(chatId: string, from?: { username?: string; fi
     .insert(telegramSessions)
     .values({
       chatId,
-      step: "AWAITING_AGENT",
+      step: "AWAITING_SEARCH",
       telegramUsername: from?.username,
       telegramFirstName: from?.first_name,
     })
@@ -53,6 +62,49 @@ async function greet(chatId: string) {
     "Hi! 👋 We're OrderPlatform. What are you looking to source today?",
     { reply_markup: removeKeyboard() }
   );
+}
+
+/**
+ * One turn of the AWAITING_SEARCH step: parse what the buyer is asking for,
+ * search across every manufacturer's catalog, and either show the matches
+ * as pick buttons or ask a short clarifying follow-up if nothing matched
+ * yet. History is kept the same way the per-manufacturer agent does, so
+ * parseSearchIntent has the full conversation to work with.
+ */
+async function handleSearch(session: typeof telegramSessions.$inferSelect, chatId: string, text: string) {
+  const history = session.history ?? [];
+  const intent = await parseSearchIntent(text, history);
+  const results = await searchProducts(intent);
+
+  const updatedHistory: ChatTurn[] = [...history, { role: "user" as const, content: text }].slice(-HISTORY_TURN_LIMIT);
+
+  if (results.length === 0) {
+    const reply =
+      "I couldn't find a match for that yet — could you tell me a bit more about what you're looking for (product type, or a delivery location)?";
+    await db
+      .update(telegramSessions)
+      .set({ history: [...updatedHistory, { role: "assistant" as const, content: reply }].slice(-HISTORY_TURN_LIMIT), updatedAt: new Date() })
+      .where(eq(telegramSessions.chatId, chatId));
+    await sendMessage(chatId, reply);
+    return;
+  }
+
+  const reply = `Found ${results.length} match${results.length > 1 ? "es" : ""} — pick one to continue:`;
+  await db
+    .update(telegramSessions)
+    .set({ history: [...updatedHistory, { role: "assistant" as const, content: reply }].slice(-HISTORY_TURN_LIMIT), updatedAt: new Date() })
+    .where(eq(telegramSessions.chatId, chatId));
+
+  await sendMessage(chatId, reply, {
+    reply_markup: inlineKeyboard(
+      results.map((r) => [
+        {
+          text: `${r.manufacturerName} — ${r.productName}`,
+          callback_data: `${RESULT_CALLBACK_PREFIX}${r.manufacturerId}:${r.productId}`,
+        },
+      ])
+    ),
+  });
 }
 
 async function askForPhone(chatId: string) {
@@ -126,6 +178,12 @@ export async function handleUpdate(update: TelegramUpdate) {
     const session = await getOrCreateSession(chatId, update.message.from);
 
     switch (session.step) {
+      case "AWAITING_SEARCH": {
+        if (!text) return;
+        await handleSearch(session, chatId, text);
+        return;
+      }
+
       case "AWAITING_AGENT": {
         if (!text) return;
 
@@ -189,7 +247,22 @@ export async function handleUpdate(update: TelegramUpdate) {
 
   if (update.callback_query) {
     const chatId = String(update.callback_query.message?.chat.id);
+    const data = update.callback_query.data;
     await answerCallbackQuery(update.callback_query.id);
-    if (!chatId) return;
+    if (!chatId || !data) return;
+
+    if (data.startsWith(RESULT_CALLBACK_PREFIX)) {
+      const [manufacturerId, productId] = data.slice(RESULT_CALLBACK_PREFIX.length).split(":");
+      if (!manufacturerId || !productId) return;
+
+      await db
+        .update(telegramSessions)
+        .set({ manufacturerId, productId, step: "AWAITING_AGENT", updatedAt: new Date() })
+        .where(eq(telegramSessions.chatId, chatId));
+
+      const [product] = await db.select({ name: products.name }).from(products).where(eq(products.id, productId));
+      await sendMessage(chatId, `Great choice — <b>${product?.name ?? "that product"}</b>. Tell me more about your requirement (quantity, specs, delivery location, deadline, business name).`);
+      return;
+    }
   }
 }

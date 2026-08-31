@@ -1,6 +1,6 @@
 import Groq from "groq-sdk";
 import { db } from "@/lib/db";
-import { products, telegramSessions } from "@/lib/db/schema";
+import { manufacturers, products, telegramSessions } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { getManufacturerForBot } from "@/lib/manufacturer";
 
@@ -121,7 +121,16 @@ export async function runLeadAgent(
   if (!groq) return fallback;
 
   try {
-    const manufacturer = await getManufacturerForBot();
+    // The session is scoped to whichever manufacturer the buyer picked
+    // from cross-manufacturer search results (lib/search/*); a session
+    // created before that flow existed won't have manufacturerId set, so
+    // it falls back to the single-manufacturer behavior this bot always
+    // had, rather than erroring on old in-flight sessions.
+    const sessionManufacturer = session.manufacturerId
+      ? (await db.select().from(manufacturers).where(eq(manufacturers.id, session.manufacturerId)))[0]
+      : undefined;
+    const manufacturer = sessionManufacturer ?? (await getManufacturerForBot());
+
     const catalog = await db
       .select({ id: products.id, name: products.name, category: products.category, description: products.description })
       .from(products)
