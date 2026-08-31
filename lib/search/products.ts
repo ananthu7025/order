@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { products, manufacturers } from "@/lib/db/schema";
 import { and, desc, eq, or, ilike, sql, type SQL } from "drizzle-orm";
 import type { SearchIntent } from "./intent";
-import { expandWords, coreConcept } from "./synonyms";
+import { buildEligibilityTerms, coreConcept } from "./synonyms";
 
 export type ProductSearchResult = {
   productId: string;
@@ -114,60 +114,82 @@ async function runFullTextSearch({ matchWords, rankExtraWords, location }: RunSe
  * need to attach searchable synonyms independent of their actual spec
  * text, which nothing so far indicates.
  *
- * Query words are OR'd together (not websearch_to_tsquery's/
- * plainto_tsquery's implicit AND between words) — a buyer saying
- * "corrugated packing boxes" must still match a listing titled
- * "Corrugated Box" even though "packing" doesn't stem to the same root as
- * "Packaging" in the listing's category, and a buyer padding their
- * message with adjectives the listing never repeats shouldn't zero out
- * every result just because one word doesn't appear anywhere.
+ * Eligibility vs. ranking — this is the important distinction:
+ * - coreTerms (from intent.product, expanded to product-family siblings —
+ *   box<->carton, bag<->pouch, via lib/search/synonyms.ts) are the ONLY
+ *   thing that determines whether a product qualifies at all (matchWords
+ *   below). A generic adjective like "packing"/"packaging"/"shipping"
+ *   must never be treated as a product-family synonym here — an earlier
+ *   version expanded "packing" <-> "packaging" directly and OR'd them into
+ *   the eligibility query, which meant ANY product whose category said
+ *   "Packaging Materials" qualified for a box search (surfacing "Kraft
+ *   Paper Bags" for "packing boxes"). Product-family expansion fixes that:
+ *   "packing"/"corrugated"/"shipping" stay as plain words with no
+ *   synonyms, so they can still match a listing that literally contains
+ *   them, but they can't drag in an unrelated product family.
+ * - secondaryTerms (intent.category + intent.attributes) and the raw,
+ *   unexpanded product words are folded in ONLY as ranking signal
+ *   (rankExtraWords) — present to push a better-matching listing higher,
+ *   never required for a match, so they can't cause an otherwise-good
+ *   product-name match to disappear, and can't independently qualify an
+ *   unrelated product either (category alone never reaches matchWords).
  *
- * lib/search/synonyms.ts additionally expands a handful of known
- * packaging-domain words (box/boxes/carton/cartons, packing/packaging,
- * bag/bags/pouch/pouches) so "carton boxes" also matches a listing that
- * only says "Box", without resorting to stemming or a vector index.
+ * Query words within coreTerms are OR'd together (not
+ * websearch_to_tsquery's/plainto_tsquery's implicit AND between words) —
+ * a buyer saying "corrugated packing boxes" must still match a listing
+ * titled "Corrugated Box" even though "packing" doesn't stem to the same
+ * root as "Packaging" in the listing's category.
  *
- * If the expanded primary search returns nothing, a fallback search
- * narrows to just the core noun of what the buyer asked for (last word +
- * its synonyms, e.g. "boxes" out of "corrugated packing boxes") and tries
- * again — still fully database-backed and deterministic, never inventing
- * a product. intent.category/attributes are folded in only as a ranking
- * signal (via rankExtraWords), never required for a match, so they can't
- * cause an otherwise-good product-name match to disappear. intent.quantity
- * is never part of the text query — nothing to filter it against — and
- * intent.location is applied as a separate ILIKE filter, not word-matched.
+ * If the primary search (full product phrase, family-expanded) returns
+ * nothing, a fallback search narrows to just the buyer's core product noun
+ * (skipping descriptive adjectives — see coreConcept in synonyms.ts, e.g.
+ * "boxes" out of "corrugated packing boxes") and tries again — still fully
+ * database-backed and deterministic, never inventing a product.
+ *
+ * intent.quantity is never part of the text query — nothing to filter it
+ * against — and intent.location is applied as a separate ILIKE filter,
+ * not word-matched.
  */
 export async function searchProducts(intent: SearchIntent): Promise<ProductSearchResult[]> {
   console.log("[search] intent", intent);
 
-  const productWords = intent.product ? toWords(intent.product) : [];
-  const secondaryWords = [intent.category, intent.attributes].filter(Boolean).flatMap((t) => toWords(t as string));
+  const coreWords = intent.product ? toWords(intent.product) : [];
+  const secondaryTerms = [intent.category, intent.attributes].filter(Boolean).flatMap((t) => toWords(t as string));
 
-  if (productWords.length === 0 && secondaryWords.length === 0) {
+  if (coreWords.length === 0 && secondaryTerms.length === 0) {
     console.log("[search] normalized product query: (none — nothing to search)");
     return [];
   }
 
-  const expandedProductWords = expandWords(productWords.length > 0 ? productWords : secondaryWords);
-  console.log("[search] normalized product query", expandedProductWords.join(" | ") || "(empty)");
+  // Eligibility gate: only the buyer's actual product words (with generic
+  // descriptive/category words like "packaging" stripped out, and the
+  // remainder expanded to product-family siblings) — never raw
+  // category/attributes text, see the eligibility-vs-ranking note above.
+  // If the buyer named no product at all, secondaryTerms (category +
+  // attributes) is the best signal available, so it goes through the same
+  // stripping/expansion rather than being used as a raw eligibility gate.
+  const coreTerms = buildEligibilityTerms(coreWords.length > 0 ? coreWords : secondaryTerms);
+  console.log("[search] normalized product query", { coreTerms, secondaryTerms });
 
-  console.log("[search] primary search", { matchWords: expandedProductWords, rankExtraWords: secondaryWords, location: intent.location });
+  console.log("[search] primary search", { matchWords: coreTerms, rankExtraWords: secondaryTerms, location: intent.location });
   const primaryResults = await runFullTextSearch({
-    matchWords: expandedProductWords,
-    rankExtraWords: secondaryWords,
+    matchWords: coreTerms,
+    rankExtraWords: secondaryTerms,
     location: intent.location,
   });
   console.log("[search] primary result count", primaryResults.length);
 
   if (primaryResults.length > 0) return primaryResults;
 
-  // Fallback: narrow to the core concept (e.g. "boxes" out of "corrugated
-  // packing boxes") and search again. Only runs when the primary search —
-  // already broadened by synonym expansion — found nothing, so a buyer
-  // whose exact wording doesn't appear anywhere still has a chance to
-  // surface the closest real listings instead of a flat "no matches".
-  const fallbackWords = coreConcept(productWords.length > 0 ? productWords : secondaryWords);
-  if (fallbackWords.length === 0 || fallbackWords.join("|") === expandedProductWords.join("|")) {
+  // Fallback: narrow to the buyer's core product noun (e.g. "boxes" out of
+  // "corrugated packing boxes", skipping the descriptive adjective) and
+  // search again. Only runs when the primary search — already broadened
+  // by product-family expansion — found nothing, so a buyer whose exact
+  // wording doesn't appear anywhere still has a chance to surface the
+  // closest real listings instead of a flat "no matches". Still gated on
+  // product-family terms only, never category/attributes.
+  const fallbackWords = coreConcept(coreWords.length > 0 ? coreWords : secondaryTerms);
+  if (fallbackWords.length === 0 || fallbackWords.join("|") === coreTerms.join("|")) {
     console.log("[search] fallback search: skipped (no narrower core concept to try)");
     return [];
   }
@@ -175,7 +197,7 @@ export async function searchProducts(intent: SearchIntent): Promise<ProductSearc
   console.log("[search] fallback search", { matchWords: fallbackWords, location: intent.location });
   const fallbackResults = await runFullTextSearch({
     matchWords: fallbackWords,
-    rankExtraWords: secondaryWords,
+    rankExtraWords: secondaryTerms,
     location: intent.location,
   });
   console.log("[search] fallback result count", fallbackResults.length);
