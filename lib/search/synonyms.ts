@@ -67,17 +67,33 @@ const DESCRIPTIVE_WORDS = new Set([
 ]);
 
 /**
- * Builds the eligibility word set for a product phrase: strips generic
- * descriptive words (which could match nearly any listing's category
- * text) and expands what's left to include product-family siblings (e.g.
- * "boxes" also matches a listing that only says "carton"). If every word
- * turns out to be descriptive (e.g. the buyer only said "corrugated" with
- * no noun), falls back to the original words rather than returning an
- * empty eligibility set — better to search on what's there than search on
- * nothing.
+ * Specific material/type words the buyer might name (e.g. "plastic bags",
+ * "wooden pallets", "glass bottles"). Unlike DESCRIPTIVE_WORDS, these are
+ * NOT stripped from eligibility — they're pulled out into a separate
+ * REQUIRED (AND'd) condition in lib/search/products.ts, because an OR'd
+ * generic noun alone isn't enough to rule out a mismatch: "plastic bags"
+ * OR-matching on "bags" alone would wrongly return a paper-bag listing,
+ * since to_tsquery's OR only needs ANY term to hit. Requiring "plastic" to
+ * also literally appear on the listing means a paper-bag product correctly
+ * fails to qualify, while a listing that genuinely says "plastic" still
+ * matches normally.
  */
-export function buildEligibilityTerms(words: string[]): string[] {
-  const core = words.filter((w) => !DESCRIPTIVE_WORDS.has(w.toLowerCase()));
+const MATERIAL_WORDS = new Set(["plastic", "glass", "metal", "wooden", "wood", "steel", "aluminum", "rubber", "cotton", "cloth"]);
+
+/**
+ * Splits a buyer's product words into the eligibility word set (OR'd —
+ * generic descriptive words stripped, remainder expanded to product-family
+ * siblings, e.g. "boxes" also matches a listing that only says "carton")
+ * and a required word set (AND'd — specific materials the buyer named,
+ * which must actually appear on the listing, not just be one option among
+ * several). If every word turns out to be descriptive (e.g. the buyer only
+ * said "corrugated" with no noun), the eligibility set falls back to the
+ * original words rather than ending up empty — better to search on what's
+ * there than search on nothing.
+ */
+export function buildEligibilityTerms(words: string[]): { matchWords: string[]; requiredWords: string[] } {
+  const requiredWords = words.filter((w) => MATERIAL_WORDS.has(w.toLowerCase()));
+  const core = words.filter((w) => !DESCRIPTIVE_WORDS.has(w.toLowerCase()) && !MATERIAL_WORDS.has(w.toLowerCase()));
   const base = core.length > 0 ? core : words;
 
   const expanded = new Set<string>();
@@ -88,7 +104,7 @@ export function buildEligibilityTerms(words: string[]): string[] {
       for (const sibling of family) expanded.add(sibling);
     }
   }
-  return [...expanded];
+  return { matchWords: [...expanded], requiredWords };
 }
 
 /**
@@ -103,7 +119,7 @@ export function buildEligibilityTerms(words: string[]): string[] {
  */
 export function coreConcept(words: string[]): string[] {
   if (words.length === 0) return [];
-  const nonDescriptive = [...words].reverse().find((w) => !DESCRIPTIVE_WORDS.has(w.toLowerCase()));
+  const nonDescriptive = [...words].reverse().find((w) => !DESCRIPTIVE_WORDS.has(w.toLowerCase()) && !MATERIAL_WORDS.has(w.toLowerCase()));
   const coreWord = nonDescriptive ?? words[words.length - 1];
-  return buildEligibilityTerms([coreWord]);
+  return buildEligibilityTerms([coreWord]).matchWords;
 }

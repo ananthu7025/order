@@ -29,19 +29,19 @@ const parseIntentTool: Groq.Chat.Completions.ChatCompletionTool = {
         product: {
           type: ["string", "null"],
           description:
-            "The product or service being searched for, normalized to a short, general search phrase in plain words — e.g. buyer says \"packing boxes\", \"carton boxes\", \"boxes for shipping\", or \"corrugated boxes\" all become a short phrase built around \"box(es)\" plus whatever descriptive word they used (corrugated, shipping, packing, carton, packaging). Keep it general, not a specific product name — you don't know what products exist in the catalog. Null if not yet clear what they want.",
+            "ONLY the product/item noun itself, plus a directly-attached descriptive word if any (e.g. \"corrugated boxes\", \"printed boxes\", \"packing boxes\", \"paper bags\"). Never include why or how the buyer will use it — strip out use-case/context phrases like \"for my honey business\", \"to pack my products\", \"for shipping\", \"for ecommerce\", \"for food\" entirely; those describe the buyer's business, not the product, and must not appear here even attached with \"for\"/\"to\". Keep it general, not a specific catalog product name — you don't know what products exist in the catalog. Null if the buyer named no product at all (a bare use-case like \"something for my business\" or \"I need something to pack my products\" is NOT a product — leave this null and let category stay null too, so the bot asks a clarifying question instead of guessing).",
         },
         category: {
           type: ["string", "null"],
           description:
-            "A general product category if inferable from context, e.g. \"Packaging Materials\" for any mention of boxes, cartons, bags, or packing/shipping materials. This is a broad classification, not a specific product — null if genuinely unclear.",
+            "A general product category if inferable from context, e.g. \"Packaging Materials\" for any mention of boxes, cartons, bags, or packing/shipping materials. This is a broad classification, not a specific product — null if genuinely unclear. Do not set this from use-case language alone (e.g. \"I need something for my honey business\" does not imply a category — leave both product and category null).",
         },
         quantity: { type: ["string", "null"], description: "Number of units mentioned, e.g. \"5000\". Null if not mentioned." },
         location: { type: ["string", "null"], description: "A delivery city/region mentioned, e.g. \"Delhi\". Null if not mentioned." },
         attributes: {
           type: ["string", "null"],
           description:
-            "Any other distinguishing detail the buyer ACTUALLY STATED — size, material, color, printing, ply count, etc — as free text. Only include details explicitly mentioned in the conversation. Never invent a size, material, ply count, or MOQ that wasn't said, even if it would be typical for this kind of product. Null if the buyer gave no such detail.",
+            "ONLY actual product characteristics the buyer explicitly stated — size, material, color, printing, ply count, etc. Never put use-case/context language here either (\"for my honey business\", \"to pack my products\", \"for ecommerce\", \"for food\", \"for my business\" are all use-case, not attributes — leave this null for those, do not paraphrase them into an attribute string). Never invent a size, material, ply count, or MOQ that wasn't said. Null if the buyer gave no actual product characteristic.",
         },
       },
       required: ["product", "category", "quantity", "location", "attributes"],
@@ -77,6 +77,17 @@ export async function parseSearchIntent(
 
 Buyers describe the same thing many different ways — treat these as equivalent when normalizing "product":
 - "packing boxes", "packaging boxes", "carton boxes", "shipping boxes", "corrugated boxes", "boxes for shipping", "boxes for packaging" all describe box-type packaging; extract the general phrase they used, do not narrow it to one specific product name.
+
+Every buyer message can contain up to three DIFFERENT kinds of information — keep them separate:
+1. PRODUCT REQUIREMENT — what the buyer wants (e.g. "bags", "boxes", "corrugated boxes", "paper bags"). This goes in "product"/"category".
+2. PRODUCT ATTRIBUTES — actual characteristics of that product the buyer stated (size, material, color, printing, ply count — e.g. "12x10x8 inches", "brown", "5 ply"). This goes in "attributes".
+3. USE-CASE / CONTEXT — why or how the buyer will use it (e.g. "to pack my honey", "for my food business", "for shipping my products", "for ecommerce", "to package cosmetics", "for my business"). This is NEVER part of "product", NEVER part of "attributes", and has no field of its own — just drop it entirely. It is background, not a search requirement.
+
+Example: "I am looking for bags to pack my honey related product" -> product: "bags" (NOT "bags to pack my honey related product", NOT "bags for honey"), attributes: null (NOT "for honey related product"). The honey/product-related wording is pure use-case and must not survive into product OR attributes.
+
+Example: "I need boxes for my ecommerce business" -> product: "boxes" (NOT "boxes for ecommerce" / "boxes for business").
+
+The rule for ambiguity: if the buyer only describes a use-case with no explicit product noun at all (e.g. "I need something for my honey business", "I need something to pack my products", "what do you sell"), that is NOT enough to infer a product — return product: null AND category: null so the app can ask a clarifying question, rather than guessing a product from the use-case alone.
 
 Rules:
 - Never invent or assume a value that wasn't stated — especially specific attributes like size, ply count, material, color, or MOQ. A generic message like "I need packing boxes" must NOT produce invented attributes such as "5 ply" or "12x10x8 inches".

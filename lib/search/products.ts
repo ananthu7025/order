@@ -35,6 +35,7 @@ function toOrQueryString(words: string[]): string | null {
 
 type RunSearchArgs = {
   matchWords: string[];
+  requiredWords: string[];
   rankExtraWords: string[];
   location: string | null;
 };
@@ -43,14 +44,16 @@ type RunSearchArgs = {
  * Runs one full-text search pass: matches products whose weighted vector
  * (name+category weighted 'A', description+material+otherSpecs weighted
  * 'B' — a name/category hit ranks above a description-only hit) contains
- * ANY of matchWords (OR'd, not AND'd — see module docs below), optionally
- * narrowed by a location filter, ranked by how many of matchWords +
- * rankExtraWords each result matches.
+ * ANY of matchWords (OR'd, not AND'd — see module docs below) AND, if
+ * given, every word in requiredWords (AND'd) — see MATERIAL_WORDS in
+ * lib/search/synonyms.ts for why a second, required word list exists
+ * separately from the OR'd one. Optionally narrowed by a location filter,
+ * ranked by how many of matchWords + rankExtraWords each result matches.
  *
  * Shared by the primary search and the fallback search in searchProducts()
  * below — same weighting and filters, different word lists.
  */
-async function runFullTextSearch({ matchWords, rankExtraWords, location }: RunSearchArgs): Promise<ProductSearchResult[]> {
+async function runFullTextSearch({ matchWords, requiredWords, rankExtraWords, location }: RunSearchArgs): Promise<ProductSearchResult[]> {
   const matchQueryString = toOrQueryString(matchWords);
   if (!matchQueryString) return [];
 
@@ -70,6 +73,16 @@ async function runFullTextSearch({ matchWords, rankExtraWords, location }: RunSe
     eq(manufacturers.verificationStatus, "VERIFIED"),
     sql`${weightedVector} @@ ${matchQuery}`,
   ];
+
+  // A specific material the buyer named (e.g. "plastic bags") must
+  // actually appear on the listing — without this, "plastic" is a no-op
+  // OR term that "bags" alone satisfies, so a paper-bag listing wrongly
+  // qualifies for a plastic-bag search. Each required word gets its own
+  // AND'd tsquery so ALL of them must be present, not just one.
+  for (const word of requiredWords) {
+    const requiredQuery = sql`to_tsquery('english', ${word})`;
+    conditions.push(sql`${weightedVector} @@ ${requiredQuery}`);
+  }
 
   if (location) {
     const pattern = `%${location}%`;
@@ -165,15 +178,19 @@ export async function searchProducts(intent: SearchIntent): Promise<ProductSearc
   // descriptive/category words like "packaging" stripped out, and the
   // remainder expanded to product-family siblings) — never raw
   // category/attributes text, see the eligibility-vs-ranking note above.
+  // A specific material the buyer named (e.g. "plastic" in "plastic bags")
+  // is pulled out separately as requiredWords (AND'd), so it actually has
+  // to appear on the listing rather than being a no-op alongside "bags".
   // If the buyer named no product at all, secondaryTerms (category +
   // attributes) is the best signal available, so it goes through the same
   // stripping/expansion rather than being used as a raw eligibility gate.
-  const coreTerms = buildEligibilityTerms(coreWords.length > 0 ? coreWords : secondaryTerms);
-  console.log("[search] normalized product query", { coreTerms, secondaryTerms });
+  const { matchWords: coreTerms, requiredWords } = buildEligibilityTerms(coreWords.length > 0 ? coreWords : secondaryTerms);
+  console.log("[search] normalized product query", { coreTerms, requiredWords, secondaryTerms });
 
-  console.log("[search] primary search", { matchWords: coreTerms, rankExtraWords: secondaryTerms, location: intent.location });
+  console.log("[search] primary search", { matchWords: coreTerms, requiredWords, rankExtraWords: secondaryTerms, location: intent.location });
   const primaryResults = await runFullTextSearch({
     matchWords: coreTerms,
+    requiredWords,
     rankExtraWords: secondaryTerms,
     location: intent.location,
   });
@@ -187,16 +204,19 @@ export async function searchProducts(intent: SearchIntent): Promise<ProductSearc
   // by product-family expansion — found nothing, so a buyer whose exact
   // wording doesn't appear anywhere still has a chance to surface the
   // closest real listings instead of a flat "no matches". Still gated on
-  // product-family terms only, never category/attributes.
+  // product-family terms only, never category/attributes — and still
+  // subject to the same requiredWords, so "plastic bags" doesn't fall back
+  // into matching a paper-bag listing either.
   const fallbackWords = coreConcept(coreWords.length > 0 ? coreWords : secondaryTerms);
   if (fallbackWords.length === 0 || fallbackWords.join("|") === coreTerms.join("|")) {
     console.log("[search] fallback search: skipped (no narrower core concept to try)");
     return [];
   }
 
-  console.log("[search] fallback search", { matchWords: fallbackWords, location: intent.location });
+  console.log("[search] fallback search", { matchWords: fallbackWords, requiredWords, location: intent.location });
   const fallbackResults = await runFullTextSearch({
     matchWords: fallbackWords,
+    requiredWords,
     rankExtraWords: secondaryTerms,
     location: intent.location,
   });
