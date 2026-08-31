@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { UnauthenticatedError } from "@/lib/manufacturer";
 
 export function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
@@ -11,6 +12,10 @@ export function handleApiError(err: unknown) {
       { error: "Validation failed", details: err.issues },
       { status: 422 }
     );
+  }
+
+  if (err instanceof UnauthenticatedError) {
+    return jsonError("Not logged in", 401);
   }
 
   if (err instanceof Error) {

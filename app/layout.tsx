@@ -16,6 +16,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         />
         <link rel="stylesheet" href="/css/styles.css" />
         <link rel="stylesheet" href="/css/manufacturer.css" />
+        <link rel="stylesheet" href="/css/auth.css" />
       </head>
       <body>{children}</body>
     </html>

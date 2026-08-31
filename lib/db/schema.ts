@@ -16,12 +16,29 @@ import { createId } from "@paralleldrive/cuid2";
 // lib/db/seed.ts. Every other table references manufacturerId so a real
 // multi-tenant/auth layer can be dropped in later without a schema rewrite.
 // ---------------------------------------------------------------------------
+export const manufacturerVerificationStatusEnum = pgEnum("manufacturer_verification_status", [
+  "PENDING_REVIEW",
+  "VERIFIED",
+  "REJECTED",
+]);
+
 export const manufacturers = pgTable("manufacturers", {
   id: text("id").primaryKey().$defaultFn(() => createId()),
+
+  // Account / login (added for manufacturer self-registration — nullable
+  // because the original seeded demo row predates this and isn't a real
+  // login-capable account).
+  fullName: text("full_name"),
+  email: text("email").unique(),
+  passwordHash: text("password_hash"),
+  mobile: text("mobile"),
+
   companyName: text("company_name").notNull(),
   businessType: text("business_type").notNull().default("Manufacturer"),
   aboutCompany: text("about_company"),
+  registrationNumber: text("registration_number"),
   yearEstablished: text("year_established"),
+  numberOfEmployees: text("number_of_employees"),
   gstin: text("gstin"),
   website: text("website"),
   phone: text("phone"),
@@ -30,6 +47,12 @@ export const manufacturers = pgTable("manufacturers", {
   manufacturingLocations: text("manufacturing_locations"),
   logoUrl: text("logo_url"),
   categories: text("categories").array().notNull().default([]),
+
+  // Verification (Step 3 of registration) — document uploads aren't wired
+  // to storage yet, so only the text/number fields are persisted for now.
+  panNumber: text("pan_number"),
+  verificationStatus: manufacturerVerificationStatusEnum("verification_status").notNull().default("PENDING_REVIEW"),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

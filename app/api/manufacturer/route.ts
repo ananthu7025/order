@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { manufacturers } from "@/lib/db/schema";
-import { getCurrentManufacturer } from "@/lib/manufacturer";
+import { getCurrentManufacturer, toPublicManufacturer } from "@/lib/manufacturer";
 import { handleApiError } from "@/lib/api-helpers";
 import { eq } from "drizzle-orm";
 
@@ -24,7 +24,7 @@ const updateManufacturerSchema = z.object({
 export async function GET() {
   try {
     const manufacturer = await getCurrentManufacturer();
-    return NextResponse.json({ manufacturer });
+    return NextResponse.json({ manufacturer: toPublicManufacturer(manufacturer) });
   } catch (err) {
     return handleApiError(err);
   }
@@ -42,7 +42,7 @@ export async function PATCH(req: NextRequest) {
       .where(eq(manufacturers.id, manufacturer.id))
       .returning();
 
-    return NextResponse.json({ manufacturer: updated });
+    return NextResponse.json({ manufacturer: toPublicManufacturer(updated) });
   } catch (err) {
     return handleApiError(err);
   }

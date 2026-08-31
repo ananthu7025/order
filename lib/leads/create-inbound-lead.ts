@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { leads } from "@/lib/db/schema";
-import { getCurrentManufacturer } from "@/lib/manufacturer";
+import { getManufacturerForBot } from "@/lib/manufacturer";
 import { autoQuoteFromLead } from "@/lib/pdf/auto-quote";
 
 export type InboundLeadInput = {
@@ -28,7 +28,7 @@ export type InboundLeadInput = {
  * same deployment).
  */
 export async function createInboundLead(data: InboundLeadInput) {
-  const manufacturer = await getCurrentManufacturer();
+  const manufacturer = await getManufacturerForBot();
 
   const [lead] = await db
     .insert(leads)

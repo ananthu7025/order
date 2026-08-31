@@ -2,7 +2,7 @@ import Groq from "groq-sdk";
 import { db } from "@/lib/db";
 import { products, telegramSessions } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
-import { getCurrentManufacturer } from "@/lib/manufacturer";
+import { getManufacturerForBot } from "@/lib/manufacturer";
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
@@ -121,7 +121,7 @@ export async function runLeadAgent(
   if (!groq) return fallback;
 
   try {
-    const manufacturer = await getCurrentManufacturer();
+    const manufacturer = await getManufacturerForBot();
     const catalog = await db
       .select({ id: products.id, name: products.name, category: products.category, description: products.description })
       .from(products)
